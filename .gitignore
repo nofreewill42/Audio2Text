@@ -1,0 +1,4 @@
+__pycache__/
+model_architecture/__pycache__/
+training_stats/
+model_weights/

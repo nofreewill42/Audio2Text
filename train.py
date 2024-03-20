@@ -61,7 +61,8 @@ if __name__ == "__main__":
     d_ff = 2048
     n_heads = 16
     dropout = 0.1
-    model = XModel(n_bbpe=n_bbpe, n_layers=n_layers, d_model=d_model, d_ff=d_ff, n_heads=n_heads, dropout=dropout)
+    window_size = 48
+    model = XModel(n_bbpe=n_bbpe, n_layers=n_layers, d_model=d_model, d_ff=d_ff, n_heads=n_heads, window_size=window_size, dropout=dropout)
     model = model.to(device, dtype=torch_dtype)
     print('Model - END')
 
@@ -130,7 +131,7 @@ if __name__ == "__main__":
             
             # Forward
             with torch.cuda.amp.autocast(torch_dtype == None):
-                enc_out, enc_lens = model(log_mels_tensor, log_mel_lens, input_tensor)
+                enc_out, enc_lens = model(log_mels_tensor, log_mel_lens)
                 enc_log_probs = torch.log_softmax(enc_out, dim=-1)#.float()  # "ctc_loss_cuda" not implemented for 'BFloat16'
                 ctc_tgt = bbpes_tensor.clone()
                 ctc_tgt[(ctc_tgt==1) | (ctc_tgt==2)] = 0

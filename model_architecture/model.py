@@ -16,24 +16,34 @@ class XMHA(nn.Module):
         self.Q = nn.Linear(d_model, d_model)
         self.K = nn.Linear(d_model, d_model)
         self.V = nn.Linear(d_model, d_model)
+        self.A2X = nn.Linear(d_model, d_model)
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(d_ff, d_model), nn.Dropout(dropout)
+            nn.Linear(d_ff, d_model)
         )
         self.layernorm1 = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
     
     def forward(self, x, attn_bias=None):
+        residual = x
         x = self.layernorm1(x)
         q, k, v = self.Q(x), self.K(x), self.V(x)
-        q = q.reshape(*q.shape[:2], self.n_heads, -1).transpose(1,2)
-        k = k.reshape(*k.shape[:2], self.n_heads, -1).transpose(1,2)
-        v = v.reshape(*v.shape[:2], self.n_heads, -1).transpose(1,2)
+        # Input tensors must be in format [B, M, H, K] where
+        # B is the batch size
+        # M the sequence length
+        # H the number of heads and
+        # K the embeding size per head
+        q = q.reshape(*q.shape[:2], self.n_heads, -1)#.transpose(1,2)
+        k = k.reshape(*k.shape[:2], self.n_heads, -1)#.transpose(1,2)
+        v = v.reshape(*v.shape[:2], self.n_heads, -1)#.transpose(1,2)
         a = xops.fmha.memory_efficient_attention(q, k, v, p=0.1, attn_bias=attn_bias)
-        a = a.transpose(1,2)
         a = a.reshape(*a.shape[:2], -1)
-        x_norm = self.layernorm2(x + a)
-        x = x + self.ff(x_norm)
+        a = self.A2X(a)  # TODO: add dropout
+        x = residual + a
+        residual = x
+        x = self.layernorm2(x)
+        x = self.ff(x)
+        x = residual + x
         return x
 
 class XModel(nn.Module):
@@ -51,6 +61,7 @@ class XModel(nn.Module):
         # Encoder
         self.encoder = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
 
+        self.norm = nn.LayerNorm(d_model)
         self.enc2bbpe = nn.Linear(d_model, n_bbpe)
     
     def forward(self, mels_tensor, mel_lens, bbpes_tensor):
@@ -61,5 +72,6 @@ class XModel(nn.Module):
         attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window-1, window_right=0)
         for enc in self.encoder:
             src = enc(src, attn_bias)
+        src = self.norm(src)
         enc_pred = self.enc2bbpe(src)
         return enc_pred, src_lens

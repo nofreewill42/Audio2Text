@@ -56,16 +56,21 @@ if __name__ == "__main__":
     print('Model - START')
     from model_architecture.model import XModel
     n_bbpe = ds.bbpe_tokenizer.get_vocab_size()
-    model = XModel(n_bbpe=n_bbpe, n_layers=16, d_model=1024, d_ff=2048, n_heads=16, dropout=0.0)
+    n_layers = 16
+    d_model = 1024
+    d_ff = 2048
+    n_heads = 16
+    dropout = 0.1
+    model = XModel(n_bbpe=n_bbpe, n_layers=n_layers, d_model=d_model, d_ff=d_ff, n_heads=n_heads, dropout=dropout)
     model = model.to(device, dtype=torch_dtype)
     print('Model - END')
 
     print("Training - START")
-    lr = 3e-3
+    lr = 1e-4
     n_grad_acc = 32
     start_epoch = 0
     epochs_num = 10
-    weight_decay = 1e-2
+    weight_decay = 1e-4
     pct_start = 0.1/epochs_num
     ctc_loss_fn = torch.nn.CTCLoss(blank=0, zero_infinity=True)
     optimizer = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay)
@@ -79,6 +84,26 @@ if __name__ == "__main__":
     stats_path.mkdir(parents=True, exist_ok=True)
     train_csv_path = Path(f'{stats_path}/train.csv')
     w_trn = open(str(train_csv_path), 'w', buffering=1)
+
+    # write hyperparameters in first line
+    w_trn.write(f'''TRAINING:\n
+                    epochs_num,{epochs_num}\n
+                    n_grad_acc,{n_grad_acc}\n
+                    start_epoch,{start_epoch}\n
+                    lr,{lr}\n
+                    weight_decay,{weight_decay}\n
+                    MODEL:\n
+                    pct_start,{pct_start}\n
+                    n_bbpe,{n_bbpe}\n
+                    d_model,{d_model}\n
+                    d_ff,{d_ff}\n
+                    n_heads,{n_heads}\n
+                    dropout,{dropout}\n
+                    ''')
+
+    
+    
+
     save_every_step = 1000
     step_counter = 0
     model_save_path = Path('model_weights')
@@ -129,7 +154,13 @@ if __name__ == "__main__":
 
             # Record
             pbar.set_description(f'epoch: {epoch_num}, enc: {enc_loss.item():.2f}, lr: {lr_sched.get_last_lr()[0]:.4e}')
-            w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{enc_loss.item():.4f}\n')
+            w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
+            w_trn.flush()
+        
+        pbar.close()
+
+    w_trn.close()
+
         
     print("Training - END")
 

@@ -62,7 +62,11 @@ class CourseraDataset(Dataset):
         srt_path = episode_path / 'srts/English.srt'
 
         # Text
-        subs = pysrt.open(srt_path)
+        try:
+            subs = pysrt.open(srt_path, encoding='iso-8859-1')
+        except Exception as e:
+            print(f'Error: {e}')
+            return None
 
         audio_len = get_audio_length(audio_path)
         subs = split_text_by_time(subs, audio_len, self.T)

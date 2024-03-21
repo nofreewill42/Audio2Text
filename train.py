@@ -69,16 +69,29 @@ if __name__ == "__main__":
     print("Training - START")
     lr = 1e-4
     n_grad_acc = 32
-    start_epoch = 0
     epochs_num = 10
+    total_steps = len(dl)*epochs_num
     weight_decay = 1e-4
     pct_start = 0.1/epochs_num
     ctc_loss_fn = torch.nn.CTCLoss(blank=0, zero_infinity=True)
     optimizer = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay)
     lr_sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr,
-                                                steps_per_epoch=len(dl)+2, epochs=epochs_num,
-                                                div_factor=25, final_div_factor=1e4, pct_start=pct_start)
+                                                    total_steps=total_steps + 2,
+                                                    div_factor=25, final_div_factor=1e4, pct_start=pct_start)
     scaler = torch.cuda.amp.GradScaler()
+
+    # load last saved model and start from there
+    models_path = Path('model_weights')
+    model_laststep_number = max([int(f.stem.split('_')[-1]) for f in models_path.iterdir() if f.is_file()])
+    if model_laststep_number > 0:
+        print(f'Loading model from {models_path}/model_{model_laststep_number}.pt')
+        model.load_state_dict(torch.load(f'{models_path}/model_{model_laststep_number}.pt'))
+        # set lr_sched to last step
+        print(f'Resuming training from last step {model_laststep_number * n_grad_acc}')
+        for _ in tqdm(range(model_laststep_number * n_grad_acc)):
+            lr_sched.step()
+        start_epoch = model_laststep_number // len(dl)
+
     # Stats
     import time
     stats_path = Path(f'training_stats/{time.strftime("%Y%m%d_%H%M%S")}')
@@ -90,6 +103,7 @@ if __name__ == "__main__":
     w_trn.write(f'''TRAINING:\n
                     epochs_num,{epochs_num}\n
                     n_grad_acc,{n_grad_acc}\n
+                    model_laststep_number,{model_laststep_number}\n
                     start_epoch,{start_epoch}\n
                     lr,{lr}\n
                     weight_decay,{weight_decay}\n
@@ -112,8 +126,6 @@ if __name__ == "__main__":
 
     for epoch_num in range(epochs_num):
         if epoch_num < start_epoch:
-            for _ in range(len(dl)):
-                lr_sched.step()
             continue
         pbar = tqdm(dl)
         for i, batch in enumerate(pbar):

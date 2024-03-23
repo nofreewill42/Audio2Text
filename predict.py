@@ -29,15 +29,15 @@ n_heads = 16
 window_size = 48
 dropout = 0.0
 model = XModel(n_bbpe, n_layers, d_model, d_ff, n_heads, window_size, dropout)
-model.load_state_dict(torch.load('model_weights/model_14000.pt', map_location=device))
+model.load_state_dict(torch.load('model_weights/model_45000.pt', map_location=device))
 model = model.to(device=device, dtype=torch.bfloat16)
-#model.eval()
+model.eval()
 
 # load audio
 from audio_processor import load_audio, AudioProcessor
 
 audio_proc = AudioProcessor()
-audio_proc.print_info()
+#audio_proc.print_info()
 
 audio_path = Path('example_audios/ctcdecoder_documentation_read.wav')
 
@@ -51,10 +51,10 @@ with torch.no_grad():
     import time
     start = time.time()
     mels_tensor, mel_lens = audio_proc.process(audio_tensor, audio_len)
-    print(time.time()-start)
     mels_tensor = mels_tensor.to(dtype=torch.bfloat16)
-    enc_out, enc_lens = model(mels_tensor, mel_lens)
-    print(enc_out, enc_lens)
+    enc_out, enc_lens, kv_caches = model(mels_tensor, mel_lens)
+    #print(enc_out, enc_lens)
+    print(time.time()-start)
 
     ctcs = enc_out.argmax(-1).squeeze(0).tolist()
 

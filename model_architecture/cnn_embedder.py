@@ -15,7 +15,7 @@ class CNNEmbedder(nn.Module):
         self.conv3 = layer(256, 512)
         self.cnn2linear = nn.Linear(512*16, d_model)
     
-    def forward(self, x, x_lens):
+    def forward(self, x, x_lens, n_cnn_processed=0):
         # x: (batch, 1, freq, time)
         # pad 2 on left side of time
         # x: (batch, 1, freq, 2+time+0)
@@ -29,5 +29,6 @@ class CNNEmbedder(nn.Module):
         x_lens = (x_lens - 1) // 2 + 1
         x_lens = (x_lens - 1) // 2 + 1
         x = x.flatten(1,2).transpose(1,2)
+        x = x[:,n_cnn_processed:]
         x = self.cnn2linear(x)
         return x, x_lens

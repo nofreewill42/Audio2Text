@@ -24,7 +24,7 @@ class XMHA(nn.Module):
         self.layernorm1 = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
     
-    def forward(self, x, attn_bias=None):
+    def forward(self, x, attn_bias=None, kv_cache=None):
         residual = x
         x = self.layernorm1(x)
         q, k, v = self.Q(x), self.K(x), self.V(x)
@@ -33,10 +33,17 @@ class XMHA(nn.Module):
         # M the sequence length
         # H the number of heads and
         # K the embeding size per head
-        q = q.reshape(*q.shape[:2], self.n_heads, -1)#.transpose(1,2)
-        k = k.reshape(*k.shape[:2], self.n_heads, -1)#.transpose(1,2)
-        v = v.reshape(*v.shape[:2], self.n_heads, -1)#.transpose(1,2)
-        a = xops.fmha.memory_efficient_attention(q, k, v, p=0.1, attn_bias=attn_bias)
+        q = q.reshape(*q.shape[:2], self.n_heads, -1)
+        k = k.reshape(*k.shape[:2], self.n_heads, -1)
+        v = v.reshape(*v.shape[:2], self.n_heads, -1)
+
+        cached_k, cached_v = kv_cache['k'], kv_cache['v']
+        if cached_k is not None:
+            k = torch.cat([cached_k, k], dim=1)
+            v = torch.cat([cached_v, v], dim=1)
+        kv_cache['k'], kv_cache['v'] = k, v
+
+        a = xops.fmha.memory_efficient_attention(q, k, v, p=0.1*self.training, attn_bias=attn_bias)
         a = a.reshape(*a.shape[:2], -1)
         a = self.A2X(a)
         x = residual + a
@@ -46,7 +53,7 @@ class XMHA(nn.Module):
         x = self.ff(x)
         x = residual + x
 
-        return x
+        return x, kv_cache
 
 class XModel(nn.Module):
     def __init__(self, n_bbpe, n_layers=6, d_model=512, d_ff=2048, n_heads=8, window_size=48, dropout=0.0):
@@ -66,14 +73,50 @@ class XModel(nn.Module):
         self.norm = nn.LayerNorm(d_model)
         self.enc2bbpe = nn.Linear(d_model, n_bbpe)
     
-    def forward(self, mels_tensor, mel_lens):
+    def forward(self, mels_tensor, mel_lens, kv_caches=None, n_cnn_processed=0):
         # enc emb
         mels_tensor = mels_tensor.unsqueeze(1)
-        src, src_lens = self.cnnemb(mels_tensor, mel_lens)
+        src, src_lens = self.cnnemb(mels_tensor, mel_lens, n_cnn_processed)
         # enc
-        attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size-1, window_right=0)
-        for enc in self.encoder:
-            src = enc(src, attn_bias)
+        #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size-1, window_right=0)
+        # https://facebookresearch.github.io/xformers/components/ops.html
+        attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightLocalAttentionMask(_window_size=self.window_size)
+        if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
+        for i, layer in enumerate(self.encoder):
+            src, kv_cache = layer(src, attn_bias, kv_cache=kv_caches[i])
+            kv_caches[i] = kv_cache
         src = self.norm(src)
         enc_pred = self.enc2bbpe(src)
-        return enc_pred, src_lens
+        enc_lens = src_lens
+        return enc_pred, enc_lens, kv_caches
+    
+
+    
+    def forward_simulate(self, mels_tensor, mel_lens, kv_caches=None):
+        # enc emb
+        mels_tensor = mels_tensor.unsqueeze(1)
+        cnn_out, cnn_lens = self.cnnemb(mels_tensor, mel_lens)
+        # enc
+        #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size-1, window_right=0)
+        # https://facebookresearch.github.io/xformers/components/ops.html
+        attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightLocalAttentionMask(_window_size=self.window_size)
+        if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
+        
+        # simulate streaming input by looping over the sequence with random chunk sizes
+        import random
+        srcs = []
+        cnn_pointer = 0
+        while cnn_pointer < cnn_out.shape[1]:
+            random_chunk_size = random.randint(1, 5)
+            if cnn_pointer < self.window_size:
+                random_chunk_size = self.window_size*2
+            src = cnn_out[:, cnn_pointer:cnn_pointer+random_chunk_size]
+            for i, layer in enumerate(self.encoder):
+                src, kv_cache = layer(src, attn_bias, kv_cache=kv_caches[i])
+                kv_caches[i] = kv_cache
+            src = self.norm(src)
+            srcs.append(src)
+            cnn_pointer += random_chunk_size
+        src = torch.cat(srcs, dim=1)
+        enc_pred = self.enc2bbpe(src)
+        return enc_pred, cnn_lens    

@@ -143,7 +143,7 @@ if __name__ == "__main__":
             
             # Forward
             with torch.cuda.amp.autocast(torch_dtype == None):
-                enc_out, enc_lens = model(log_mels_tensor, log_mel_lens)
+                enc_out, enc_lens, kv_caches = model(log_mels_tensor, log_mel_lens)
                 enc_log_probs = torch.log_softmax(enc_out, dim=-1)#.float()  # "ctc_loss_cuda" not implemented for 'BFloat16'
                 ctc_tgt = bbpes_tensor.clone()
                 ctc_tgt[(ctc_tgt==1) | (ctc_tgt==2)] = 0

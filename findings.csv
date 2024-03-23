@@ -1,0 +1,1 @@
+Encoder Only 9epoch coursera ~66hours of training time; 10ms mel * 8 cnn on what there is a 48-”timesample” sliding window; 16 layers 1024 d_model 16 heads 2048 d_ff normalize first ... commit message of hash 042c99121e99500d9fa9b3267aa8252fd84819c9,0.186812877655029

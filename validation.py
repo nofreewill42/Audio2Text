@@ -78,6 +78,9 @@ print(bbpe_tokenizer.decode(bbpes))
 # Compare with ground truth - START
 with open(text_path, 'r') as f:
     text = f.read().strip()
-    #print(text)
-    print(edlib.align(text, bbpe_tokenizer.decode(bbpes), task='path')['editDistance'])
+    predicted_text = bbpe_tokenizer.decode(bbpes)
+    
+    result = edlib.align(text, predicted_text, task='path')
+    nice = edlib.getNiceAlignment(result, text, predicted_text)
+    print(None)
 # Compare with ground truth - END

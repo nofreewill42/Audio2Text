@@ -5,7 +5,7 @@ from model_architecture.model import XModel
 from tokenizers import ByteLevelBPETokenizer
 
 def ctc_to_bbpes(ctcs):
-    '''0 0 878 878 0 835 0 0 0 -> 0 878 0 835 0 -> 878 835'''
+    '''[0 0 878 878 0 835 0 0 0] -> [0 878 0 835 0] -> [878 835]'''
     bbpes = [ctcs[0]]
     # remove consecutive duplicates
     for i in range(1, len(ctcs)):

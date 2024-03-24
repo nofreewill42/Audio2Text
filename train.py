@@ -44,7 +44,7 @@ if __name__ == "__main__":
     episodes_list = [k for k,v in langs_dict.items() if v == 'en']
     
     
-    ds = CourseraDataset(ds_path, episodes_list, tokenizer_path, T=120.000)
+    ds = CourseraDataset(ds_path, episodes_list, tokenizer_path, T=240.000)
     dl = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=0)
     print('Dataset - END')
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     print('Model - START')
     from model_architecture.model import XModel
     n_bbpe = ds.bbpe_tokenizer.get_vocab_size()
-    n_layers = 16
+    n_layers = 6
     d_model = 1024
     d_ff = 2048
     n_heads = 16
@@ -136,7 +136,7 @@ if __name__ == "__main__":
             try:
                 if batch == None:
                     continue
-                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, cross_mask = batch
+                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, cross_mask, audio_path = batch
                 # Move to device
                 audios_tensor, audio_lens = audios_tensor.to(device), audio_lens.to(device)
                 bbpes_tensor, bbpe_lens = bbpes_tensor.to(device), bbpe_lens.to(device)
@@ -154,6 +154,9 @@ if __name__ == "__main__":
                     ctc_tgt[(ctc_tgt==1) | (ctc_tgt==2)] = 0
                     enc_loss = ctc_loss_fn(enc_log_probs.transpose(0,1), ctc_tgt, enc_lens, bbpe_lens)  # ctclossfn is wrong so correct it here
                     dec_loss = dec_loss_fn(dec_out.flatten(0,1), target_tensor.flatten(0,1))
+                    if torch.isnan(enc_loss) or torch.isnan(dec_loss):
+                        print('NAN')
+                        continue
                     loss = dec_loss * 0.9 + enc_loss * 0.1
                     if loss.item()>30:
                         continue
@@ -176,6 +179,8 @@ if __name__ == "__main__":
                 w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{loss.item()*n_grad_acc:.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
                 w_trn.flush()
             except Exception as e:
+                print(f'tgt: {target_tensor.shape}')
+                print(f'audio path: {audio_path}')
                 print(f'Error: {e}')
                 continue
         

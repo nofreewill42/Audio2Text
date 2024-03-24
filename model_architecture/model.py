@@ -112,6 +112,10 @@ class XModel(nn.Module):
             # # unbatchify
             # qs = torch.zeros_like(tgt)
 
+            q_starts = cross_mask.q_seqinfo.seqstart.tolist()
+            k_starts = cross_mask.k_seqinfo.seqstart.tolist()
+            if q_starts[-1] != tgt.shape[1]+1:
+                print('q_lens[-1] != tgt.shape[1]+1')
             tgt, _ = self.cross_attn[i](tgt, kv=src, attn_bias=cross_mask, kv_cache={'k':None, 'v':None})
             
             # dec  # TODO: play with other attn_bias for decoder than for encoder

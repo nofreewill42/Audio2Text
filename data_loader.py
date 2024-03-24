@@ -18,11 +18,12 @@ def collate_fn(batch):
     if len(batch) == 0:
         print('Empty batch because of None')
         return None
-    if len([(a,b,m) for (a,b,m) in batch if len(b) < len(a)/16000*12.5]) == 0:
+    if len([(a,b,m,p) for (a,b,m,p) in batch if len(b) < len(a)/16000*12.5]) == 0:
         print('Empty batch because of something to do with < 12.5')
         return None
     cross_mask = batch[0][2]  # TODO: do the mask here for all the batch (one big mask)
-    batch = [(a,b) for (a,b,m) in batch]
+    audio_path = batch[0][3]
+    batch = [(a,b) for (a,b,m,p) in batch]
     audio_tensors, bbpe_tensors = list(zip(*batch))
     audio_lens = [len(audio) for audio in audio_tensors]
     bbpe_lens = [len(bbpe) for bbpe in bbpe_tensors]
@@ -30,7 +31,7 @@ def collate_fn(batch):
     audio_lens = torch.LongTensor(audio_lens)
     bbpes_tensor = torch.nn.utils.rnn.pad_sequence(bbpe_tensors, batch_first=True)
     bbpe_lens = torch.LongTensor(bbpe_lens)
-    return audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, cross_mask
+    return audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, cross_mask, audio_path
 
 
 
@@ -58,7 +59,7 @@ class CourseraDataset(Dataset):
         self.T = T
 
     def __len__(self):
-        return len(self.episodes_list)
+        return 300#len(self.episodes_list)
 
     def __getitem__(self, idx):
         episode_path = self.ds_path / self.episodes_list[idx]
@@ -72,13 +73,16 @@ class CourseraDataset(Dataset):
             print(f'Error: {e}')
             return None
 
+        # remove subs where start and end are the same
+        subs = [sub for sub in subs if sub.start.ordinal != sub.end.ordinal]
+
         audio_len = get_audio_length(audio_path)
         subs = split_text_by_time(subs, audio_len, self.T)
 
         # text = ' '.join([sub.text for sub in subs])
         # text = ' '.join(text.split('\n'))
         texts = [sub.text.replace('\n', ' ') for sub in subs]
-        bbpeses = [self.bbpe_tokenizer.encode(text).ids + [2] for text in texts]  # 2 is the end token, for each audio chunk
+        bbpeses = [[1] + self.bbpe_tokenizer.encode(text).ids + [2] for text in texts]
         starts = [sub.start.ordinal for sub in subs]
         ends = [sub.end.ordinal for sub in subs]
         try:
@@ -99,21 +103,23 @@ class CourseraDataset(Dataset):
                 if True:
                     starts.insert(i+1, e_i)
                     ends.insert(i+1, s_i1)
-                    bbpeses.insert(i+1, [2])  # 2 is the end token (solely that one as there is no text in a gap (shouldn't be))
+                    bbpeses.insert(i+1, [1,2])  # stop token right after the start token
                 else:
                     pass # TODO: expand the next text's audio's context's start to the beginning of the gap with the silence (required for being able to detect when the next text starts...)
-        bbpes_list = [1] + [bbpe for bbpes in bbpeses for bbpe in bbpes]  # 1 is the start token (only one time at the very beginning)
+        bbpes_list = [bbpe for bbpes in bbpeses for bbpe in bbpes]
         # BBPEs to tensor
         bbpes_tensor = torch.tensor(bbpes_list, dtype=torch.long)
 
         # Mask for the creation of the BlockDiagonalGappyKeysMask - START
         # q_lens - START
         q_lens = [len(bbpes) for bbpes in bbpeses]
-        q_lens[0] += 1  # for the added start token
-        q_lens[-1] -= 1  # for the removed end token (the very last one)
+        #q_lens[-1] -= 1  # for removing the very last end token
         # q_lens - END
         # kv_lens - START          # kv_lens = [(e-s)//80 for s,e in zip(starts, ends)]; wrong implementation, doesn't work !!!
         kv_lens = [int(e//80-s//80) for s,e in zip(starts, ends)]  # 80ms is the hop_length on the cnn output
+        if any([l==0 for l in kv_lens]):
+            print('Zero length kv_lens')
+            return None
         # kv_lens - END
         # kv_starts - START
         kv_starts = [int(s//80) for s in starts] + [int(ends[-1]//80)]
@@ -131,7 +137,7 @@ class CourseraDataset(Dataset):
         try:
             duration = end_time - start_time
             audio_tensor = load_audio(audio_path, offset=start_time, duration=duration)
-            return audio_tensor, bbpes_tensor, cross_mask
+            return audio_tensor, bbpes_tensor, cross_mask, audio_path
         except Exception as e:
             print(f'Error: {e}')
             return None

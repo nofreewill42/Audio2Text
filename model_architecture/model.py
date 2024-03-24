@@ -24,10 +24,12 @@ class XMHA(nn.Module):
         self.layernorm1 = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
     
-    def forward(self, x, attn_bias=None, kv_cache=None):
+    def forward(self, x, kv=None, attn_bias=None, kv_cache=None):
         residual = x
         x = self.layernorm1(x)
-        q, k, v = self.Q(x), self.K(x), self.V(x)
+        if kv is None:
+            kv = x
+        q, k, v = self.Q(x), self.K(kv), self.V(kv)
         # Input tensors must be in format [B, M, H, K] where
         # B is the batch size
         # M the sequence length
@@ -66,29 +68,64 @@ class XModel(nn.Module):
         self.window_size = window_size
 
         # Encoder embeddings
-        self.cnnemb = CNNEmbedder(d_model)#, N=64, n=128, ff=d_model, first_k=3, first_s=2, last_s=1)
+        self.cnnemb = CNNEmbedder(d_model)
+        # BBPE embeddings
+        self.bbpemb = nn.Embedding(n_bbpe, d_model)
         # Encoder
         self.encoder = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        # Cross-attention
+        self.cross_attn = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        # Decoder
+        self.decoder = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
 
-        self.norm = nn.LayerNorm(d_model)
+        self.enc_norm = nn.LayerNorm(d_model)
         self.enc2bbpe = nn.Linear(d_model, n_bbpe)
+        self.dec_norm = nn.LayerNorm(d_model)
+        self.dec2bbpe = nn.Linear(d_model, n_bbpe)
     
-    def forward(self, mels_tensor, mel_lens, kv_caches=None, n_cnn_processed=0):
+    def forward(self, mels_tensor, mel_lens, bbpes_tensor, kv_caches_enc=None, kv_caches_dec=None, n_cnn_processed=0, cross_mask=None):
         # enc emb
         mels_tensor = mels_tensor.unsqueeze(1)
         src, src_lens = self.cnnemb(mels_tensor, mel_lens, n_cnn_processed)
+        # dec emb
+        tgt = self.bbpemb(bbpes_tensor)
         # enc
         #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size-1, window_right=0)
         # https://facebookresearch.github.io/xformers/components/ops.html
         attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightLocalAttentionMask(_window_size=self.window_size)
-        if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
+        if kv_caches_enc is None: kv_caches_enc = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
+        if kv_caches_dec is None: kv_caches_dec = [{'k':None, 'v':None} for _ in range(len(self.decoder))]
         for i, layer in enumerate(self.encoder):
-            src, kv_cache = layer(src, attn_bias, kv_cache=kv_caches[i])
-            kv_caches[i] = kv_cache
-        src = self.norm(src)
+            # enc
+            src, kv_cache = layer(src, attn_bias=attn_bias, kv_cache=kv_caches_enc[i])
+            kv_caches_enc[i] = kv_cache
+            # cross-attn  # TODO: dec and cross-attn swapped places ?
+            # batchify
+            # q_start = cross_mask.q_seqinfo.seqstart
+            # q_len = q_start[1:] - q_start[:-1]
+            # k_seqlen = cross_mask.k_seqinfo.seqlen
+            # k_seqstart = cross_mask.k_seqinfo.seqstart
+            # qs = torch.zeros(len(q_len), max(q_len), src.shape[-1], device=src.device, dtype=src.dtype)
+            # for i in range(len(q_start)-1):
+            #     qs[i, :q_len[i]] = src[:, q_start[i]:q_start[i+1]]
+            # qs, _ = self.cross_attn[i](qs, kv=src, attn_bias=cross_mask, kv_cache={'k':None, 'v':None})
+            # # unbatchify
+            # qs = torch.zeros_like(tgt)
+
+            tgt, _ = self.cross_attn[i](tgt, kv=src, attn_bias=cross_mask, kv_cache={'k':None, 'v':None})
+            
+            # dec  # TODO: play with other attn_bias for decoder than for encoder
+            tgt, kv_cache = self.decoder[i](tgt, attn_bias=attn_bias, kv_cache=kv_caches_dec[i])
+            kv_caches_dec[i] = kv_cache
+
+        src = self.enc_norm(src)
         enc_pred = self.enc2bbpe(src)
         enc_lens = src_lens
-        return enc_pred, enc_lens, kv_caches
+
+        tgt = self.dec_norm(tgt)
+        dec_pred = self.dec2bbpe(tgt)
+
+        return enc_pred, enc_lens, dec_pred, kv_caches_enc, kv_caches_dec
     
 
     

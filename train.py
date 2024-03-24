@@ -44,7 +44,7 @@ if __name__ == "__main__":
     episodes_list = [k for k,v in langs_dict.items() if v == 'en']
     
     
-    ds = CourseraDataset(ds_path, episodes_list, tokenizer_path, T=240.000)
+    ds = CourseraDataset(ds_path, episodes_list, tokenizer_path, T=120.000)
     dl = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=0)
     print('Dataset - END')
 
@@ -74,6 +74,7 @@ if __name__ == "__main__":
     weight_decay = 1e-4
     pct_start = 0.1/epochs_num
     ctc_loss_fn = torch.nn.CTCLoss(blank=0, zero_infinity=True)
+    dec_loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay)
     lr_sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr,
                                                     total_steps=total_steps + 2,
@@ -83,6 +84,7 @@ if __name__ == "__main__":
     # load last saved model and start from there
     models_path = Path('model_weights')
     model_laststep_number = max([int(f.stem.split('_')[-1]) for f in models_path.iterdir() if f.is_file()])
+    model_laststep_number = 0
     if model_laststep_number > 0:
         print(f'Loading model from {models_path}/model_{model_laststep_number}.pt')
         model.load_state_dict(torch.load(f'{models_path}/model_{model_laststep_number}.pt'))
@@ -91,6 +93,8 @@ if __name__ == "__main__":
         for _ in tqdm(range(model_laststep_number * n_grad_acc)):
             lr_sched.step()
         start_epoch = model_laststep_number // len(dl)
+    else:
+        start_epoch = 0
 
     # Stats
     import time
@@ -129,46 +133,51 @@ if __name__ == "__main__":
             continue
         pbar = tqdm(dl)
         for i, batch in enumerate(pbar):
-            if batch == None:
-                continue
-            audios_tensor, audio_lens, bbpes_tensor, bbpe_lens = batch
-            # Move to device
-            audios_tensor, audio_lens = audios_tensor.to(device), audio_lens.to(device)
-            bbpes_tensor, bbpe_lens = bbpes_tensor.to(device), bbpe_lens.to(device)
-            input_tensor = bbpes_tensor[:, :-1]
-            target_tensor = bbpes_tensor[:, 1:]
-            with torch.no_grad():
-                log_mels_tensor, log_mel_lens = audio_proc.process(audios_tensor, audio_lens)
-                log_mels_tensor = log_mels_tensor.to(dtype=torch_dtype)
-            
-            # Forward
-            with torch.cuda.amp.autocast(torch_dtype == None):
-                enc_out, enc_lens, kv_caches = model(log_mels_tensor, log_mel_lens)
-                enc_log_probs = torch.log_softmax(enc_out, dim=-1)#.float()  # "ctc_loss_cuda" not implemented for 'BFloat16'
-                ctc_tgt = bbpes_tensor.clone()
-                ctc_tgt[(ctc_tgt==1) | (ctc_tgt==2)] = 0
-                enc_loss = ctc_loss_fn(enc_log_probs.transpose(0,1), ctc_tgt, enc_lens, bbpe_lens)  # ctclossfn is wrong so correct it here
-                loss = enc_loss
-                if loss.item()>20:
+            try:
+                if batch == None:
                     continue
-                loss = loss / n_grad_acc
-            # Backward
-            scaler.scale(loss).backward()
-            if (i+1) % n_grad_acc == n_grad_acc-1:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-                if step_counter % save_every_step == 0:
-                    torch.save(model.state_dict(), f'{model_save_path}/model_{step_counter}.pt')
-                step_counter += 1
-            lr_sched.step()
+                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, cross_mask = batch
+                # Move to device
+                audios_tensor, audio_lens = audios_tensor.to(device), audio_lens.to(device)
+                bbpes_tensor, bbpe_lens = bbpes_tensor.to(device), bbpe_lens.to(device)
+                input_tensor = bbpes_tensor[:, :-1]
+                target_tensor = bbpes_tensor[:, 1:]
+                with torch.no_grad():
+                    log_mels_tensor, log_mel_lens = audio_proc.process(audios_tensor, audio_lens)
+                    log_mels_tensor = log_mels_tensor.to(dtype=torch_dtype)
+                
+                # Forward
+                with torch.cuda.amp.autocast(torch_dtype == None):
+                    enc_out, enc_lens, dec_out, kv_caches_enc, kv_caches_dec = model(log_mels_tensor, log_mel_lens, input_tensor, cross_mask=cross_mask)
+                    enc_log_probs = torch.log_softmax(enc_out, dim=-1)#.float()  # "ctc_loss_cuda" not implemented for 'BFloat16'
+                    ctc_tgt = bbpes_tensor.clone()
+                    ctc_tgt[(ctc_tgt==1) | (ctc_tgt==2)] = 0
+                    enc_loss = ctc_loss_fn(enc_log_probs.transpose(0,1), ctc_tgt, enc_lens, bbpe_lens)  # ctclossfn is wrong so correct it here
+                    dec_loss = dec_loss_fn(dec_out.flatten(0,1), target_tensor.flatten(0,1))
+                    loss = dec_loss * 0.9 + enc_loss * 0.1
+                    if loss.item()>30:
+                        continue
+                    loss = loss / n_grad_acc
+                # Backward
+                scaler.scale(loss).backward()
+                if (i+1) % n_grad_acc == n_grad_acc-1:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                    if step_counter % save_every_step == 0:
+                        torch.save(model.state_dict(), f'{model_save_path}/model_{step_counter}.pt')
+                    step_counter += 1
+                lr_sched.step()
 
-            # Record
-            pbar.set_description(f'epoch: {epoch_num}, enc: {enc_loss.item():.2f}, lr: {lr_sched.get_last_lr()[0]:.4e}')
-            w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
-            w_trn.flush()
+                # Record
+                pbar.set_description(f'epoch: {epoch_num}, enc: {enc_loss.item():.2f}, dec: {dec_loss.item():.2f}, lr: {lr_sched.get_last_lr()[0]:.4e}')
+                w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{loss.item()*n_grad_acc:.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
+                w_trn.flush()
+            except Exception as e:
+                print(f'Error: {e}')
+                continue
         
         pbar.close()
 

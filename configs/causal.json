@@ -13,5 +13,15 @@
         "n_heads": 16,
         "window_size": [47,1,0],
         "dropout": 0.0
+    },
+    "audio_processing": {
+        "sr": 16000,
+        "n_mels": 128,
+        "n_fft": 512,
+        "hop_length": 160,
+        "f_min": 0.0,
+        "f_max": 8000,
+        "mean": -3.4717,
+        "std": 1.7279
     }
 }

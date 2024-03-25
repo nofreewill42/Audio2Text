@@ -37,22 +37,27 @@ def load_audio(path: Union[str, Path], offset: Optional[float] = None, duration:
 
 
 class AudioProcessor():
-    def __init__(self, sr=16000, n_mels=128, n_fft=512, hop_length=160, f_min=0.0, f_max=None):
-        self.sr = sr
-        self.n_mels = n_mels
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-        self.f_min = f_min
-        self.f_max = f_max
+    #def __init__(self, sr=16000, n_mels=128, n_fft=512, hop_length=160, f_min=0.0, f_max=None):
+    def __init__(self, config):
+
+        # CONFIG - START
+        audio_config = config['audio_processing']
+        sr = audio_config['sr']
+        n_mels = audio_config['n_mels']
+        n_fft = audio_config['n_fft']
+        hop_length = audio_config['hop_length']
+        f_min = audio_config['f_min']
+        f_max = audio_config.get('f_max', None)  # Use .get for optional fields
 
         self.window = torch.hann_window(n_fft)
         self.mel_basis = torch.from_numpy(librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmin=f_min, fmax=f_max)).float()
 
         # Normalize
-        # self.mean = torch.tensor(-4.8621)
-        # self.std = torch.tensor(2.1649)
-        self.mean = torch.tensor(-3.4717)
-        self.std = torch.tensor(1.7279)
+        self.mean = torch.tensor(audio_config['mean'])
+        self.std = torch.tensor(audio_config['std'])
+        # self
+        self.sr, self.n_mels, self.n_fft, self.hop_length, self.f_min, self.f_max = sr, n_mels, n_fft, hop_length, f_min, f_max
+        # CONFIG - END
     
     def print_info(self):
         print(f'sr: {self.sr}')

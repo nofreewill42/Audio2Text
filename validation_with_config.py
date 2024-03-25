@@ -8,70 +8,23 @@ from tokenizers import ByteLevelBPETokenizer
 
 import edlib
 
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Device: {device}")
-
+from pathlib import Path
 import json
-
-config_path = Path('configs/causal.json')
-config = json.loads(config_path.read_text())
-
-# Model - START
+import torch
+from audio_processor import AudioProcessor, load_audio
+from tokenizers import ByteLevelBPETokenizer
 from model_architecture.model import XModel
 
-model = XModel(config)
+from utils import load_model
 
-mapping = {
-    "cnnemb.conv1.0.weight": "cnnemb.convs.0.conv.weight",
-    "cnnemb.conv1.0.bias": "cnnemb.convs.0.conv.bias",
-    "cnnemb.conv1.1.weight": "cnnemb.convs.0.bn.weight",
-    "cnnemb.conv1.1.bias": "cnnemb.convs.0.bn.bias",
-    "cnnemb.conv1.1.running_mean": "cnnemb.convs.0.bn.running_mean",
-    "cnnemb.conv1.1.running_var": "cnnemb.convs.0.bn.running_var",
-    "cnnemb.conv1.1.num_batches_tracked": "cnnemb.convs.0.bn.num_batches_tracked",
-    "cnnemb.conv2.0.weight": "cnnemb.convs.1.conv.weight",
-    "cnnemb.conv2.0.bias": "cnnemb.convs.1.conv.bias",
-    "cnnemb.conv2.1.weight": "cnnemb.convs.1.bn.weight",
-    "cnnemb.conv2.1.bias": "cnnemb.convs.1.bn.bias",
-    "cnnemb.conv2.1.running_mean": "cnnemb.convs.1.bn.running_mean",
-    "cnnemb.conv2.1.running_var": "cnnemb.convs.1.bn.running_var",
-    "cnnemb.conv2.1.num_batches_tracked": "cnnemb.convs.1.bn.num_batches_tracked",
-    "cnnemb.conv3.0.weight": "cnnemb.convs.2.conv.weight",
-    "cnnemb.conv3.0.bias": "cnnemb.convs.2.conv.bias",
-    "cnnemb.conv3.1.weight": "cnnemb.convs.2.bn.weight",
-    "cnnemb.conv3.1.bias": "cnnemb.convs.2.bn.bias",
-    "cnnemb.conv3.1.running_mean": "cnnemb.convs.2.bn.running_mean",
-    "cnnemb.conv3.1.running_var": "cnnemb.convs.2.bn.running_var",
-    "cnnemb.conv3.1.num_batches_tracked": "cnnemb.convs.2.bn.num_batches_tracked",
-}
 
-step_numbers = [1000,2000,10000,25000,45000]
-for step_number in step_numbers:
-    from collections import OrderedDict
-    old_state_dict = torch.load(f'model_weights/{config_path.stem}/model_{step_number}.pt', map_location=device)
-    new_state_dict = OrderedDict()
-    for old_key, value in old_state_dict.items():
-        if old_key in mapping:
-            new_key = mapping[old_key]
-        else:
-            new_key = old_key
-        new_state_dict[new_key] = value
-
-    model.load_state_dict(new_state_dict)
-    # save the new state dict
-    torch.save(model.state_dict(), f'model_weights/{config_path.stem}/model_{step_number}_new.pt')
-model = model.to(device=device, dtype=torch.bfloat16)
-model.eval()
-# Model - END
-
-# Tokenizer - START
-tokenizer_path = Path('/home/nofreewill/Documents/Projects/Audio2Text_archived/tokenizer/')
-bbpe_tokenizer = ByteLevelBPETokenizer.from_file(f'{tokenizer_path}/vocab.json', f'{tokenizer_path}/merges.txt')
-# Tokenizer - END
-
-# Load audio - START
-audio_proc = AudioProcessor()
+# Usage example
+config_name = "causal"
+dtype = torch.bfloat16
+step_number = 45000
+audio_proc, model, bbpe_tokenizer, device = load_model(config_name, step_number, dtype=dtype)
+#model.eval()
+print(f'Using device: {device}')
 audio_proc.print_info()
 
 audio_path = Path('example_audios/validation.wav')
@@ -88,7 +41,7 @@ with torch.no_grad():
     import time
     start = time.time()
     mels_tensor, mel_lens = audio_proc.process(audio_tensor, audio_len)
-    mels_tensor = mels_tensor.to(dtype=torch.bfloat16)
+    mels_tensor = mels_tensor.to(dtype=dtype)
     enc_out, enc_lens, kv_caches = model(mels_tensor, mel_lens)
     print(enc_out, enc_lens)
     print(time.time()-start)

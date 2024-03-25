@@ -56,17 +56,27 @@ class XMHA(nn.Module):
         return x, kv_cache
 
 class XModel(nn.Module):
-    def __init__(self, n_bbpe, n_layers=6, d_model=512, d_ff=2048, n_heads=8, window_size=48, dropout=0.0):
+    #def __init__(self, n_bbpe, n_layers=6, d_model=512, d_ff=2048, n_heads=8, window_size=48, dropout=0.0):
+    def __init__(self, config):
         super().__init__()
-        self.n_bbpe = n_bbpe
-        self.d_model = d_model
-        self.d_ff = d_ff
-        self.n_heads = n_heads
 
-        self.window_size = window_size
+        # CONFIG - START
+        # "global" config
+        n_bbpe = config["n_bbpe"]
+        d_model = config["d_model"]
+        # model config
+        model_config = config["model"]
+        d_ff = model_config["d_ff"]
+        n_heads = model_config["n_heads"]
+        n_layers = model_config["n_layers"]
+        dropout = model_config["dropout"]
+        # self
+        self.n_bbpe, self.n_layers, self.d_model, self.d_ff, self.n_heads, self.dropout = n_bbpe, n_layers, d_model, d_ff, n_heads, dropout
+        self.window_size = (model_config["window_size"][0], model_config["window_size"][-1]) # model_config["window_size"] is [window_left, 1, window_right]
+        # CONFIG - END
 
         # Encoder embeddings
-        self.cnnemb = CNNEmbedder(d_model)#, N=64, n=128, ff=d_model, first_k=3, first_s=2, last_s=1)
+        self.cnnemb = CNNEmbedder(config)
         # Encoder
         self.encoder = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
 
@@ -78,9 +88,9 @@ class XModel(nn.Module):
         mels_tensor = mels_tensor.unsqueeze(1)
         src, src_lens = self.cnnemb(mels_tensor, mel_lens, n_cnn_processed)
         # enc
-        #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size-1, window_right=0)
+        attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size[0], window_right=self.window_size[1])
         # https://facebookresearch.github.io/xformers/components/ops.html
-        attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightLocalAttentionMask(_window_size=self.window_size)
+        #attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightLocalAttentionMask(_window_size=self.window_size)
         if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
         for i, layer in enumerate(self.encoder):
             src, kv_cache = layer(src, attn_bias, kv_cache=kv_caches[i])

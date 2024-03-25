@@ -19,9 +19,9 @@ from utils import load_model
 
 
 # Usage example
-config_name = "causal"
+config_name = "encoder_only_causal"#offline"#
 dtype = torch.bfloat16
-step_number = 45000
+step_number = 200#1000 #45000
 audio_proc, model, bbpe_tokenizer, device = load_model(config_name, step_number, dtype=dtype)
 #model.eval()
 print(f'Using device: {device}')

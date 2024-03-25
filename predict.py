@@ -15,6 +15,41 @@ def ctc_to_bbpes(ctcs):
     bbpes = [bbpe for bbpe in bbpes if bbpe != 0]
     return bbpes
 
+def ctc_to_timedbbpes(ctcs):
+    bbpes = [ctcs[0]]
+    starts = [0]
+    ends = [1]
+    for i, ctc in enumerate(ctcs[1:]):
+        if ctc == bbpes[-1]:
+            ends[-1] = i+1
+        else:
+            bbpes.append(ctc)
+            starts.append(i)
+            ends.append(i+1)
+    return [(bbpe, start, end) for bbpe, start, end in zip(bbpes, starts, ends) if bbpe != 0]
+
+def bbpes_to_timedwords(bbpes):
+    '''
+    bbpes: [(bbpe, start, end), ...]
+    bbpe, start and end are ints
+    start and end are in 80ms units
+    '''
+    chunk, start, end = bbpes[0]
+    words = [[bbpe_tokenizer.decode([chunk]), start, end]]
+    for bbpe, start, end in bbpes[1:]:
+        chunk = bbpe_tokenizer.decode([bbpe])
+        if chunk.startswith(' '):
+            words.append([chunk, start, end])
+        else:
+            words[-1][0] += chunk
+            words[-1][2] = end
+    # to seconds
+    for word in words:
+        word[1] = round(word[1]*0.08, 2)
+        word[2] = round(word[2]*0.08, 2)        
+    return words
+
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -58,6 +93,7 @@ with torch.no_grad():
 
     ctcs = enc_out.argmax(-1).squeeze(0).tolist()
 
-bbpes = ctc_to_bbpes(ctcs)
-print(bbpe_tokenizer.decode(bbpes))
+bbpes = ctc_to_timedbbpes(ctcs)
+timed_words = bbpes_to_timedwords(bbpes)
+
 

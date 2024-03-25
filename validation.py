@@ -82,5 +82,6 @@ with open(text_path, 'r') as f:
     
     result = edlib.align(text, predicted_text, task='path')
     nice = edlib.getNiceAlignment(result, text, predicted_text)
+    print(result['editDistance']/len(text))
     print(None)
 # Compare with ground truth - END

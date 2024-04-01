@@ -42,8 +42,8 @@ if __name__ == "__main__":
 
     # load model statedict
     #state_dict_path = Path('model_weights/encoder_only_causal/model_45000.pt')
-    state_dict_path = Path('model_weights/encoder_only_offline/model_1000.pt')
-    model.load_state_dict(torch.load(state_dict_path, map_location=device))
+    # state_dict_path = Path('model_weights/encoder_only_offline/model_1000.pt')
+    # model.load_state_dict(torch.load(state_dict_path, map_location=device))
 
     print('Dataset - START')
     tokenizer_path = Path(f'tokenizer/bbpe_{model.n_bbpe}')
@@ -60,11 +60,12 @@ if __name__ == "__main__":
     print("Training - START")
     lr = 1e-4
     n_grad_acc = 32
-    epochs_num = 1#0
+    epochs_num = 10
     total_steps = len(dl)*epochs_num
     weight_decay = 1e-4
     pct_start = 0.1/epochs_num
     ctc_loss_fn = torch.nn.CTCLoss(blank=0, zero_infinity=True)
+    dec_loss_fn = torch.nn.CrossEntropyLoss(ignore_index=0)
     optimizer = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay)
     lr_sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr,
                                                     total_steps=total_steps + 2,
@@ -77,11 +78,11 @@ if __name__ == "__main__":
     model_save_path.mkdir(parents=True, exist_ok=True)
 
     model_laststep_number = max([int(f.stem.split('_')[-1]) for f in model_save_path.iterdir() if f.is_file()])
+    model_laststep_number = 44761
     if model_laststep_number > 0:
         print(f'Loading model from {model_save_path}/model_{model_laststep_number}.pt')
         model.load_state_dict(torch.load(f'{model_save_path}/model_{model_laststep_number}.pt'))
         # set lr_sched to last step
-        model_laststep_number = 4000  # delete this line RIGHT NOW!!!
         print(f'Resuming training from last step {model_laststep_number * n_grad_acc}')
         for _ in tqdm(range(model_laststep_number * n_grad_acc)):
             lr_sched.step()
@@ -110,7 +111,7 @@ if __name__ == "__main__":
                     ''')
 
     
-    step_counter = 0
+    step_counter = model_laststep_number + 1
 
     losses = []
     n_acc_losses = 100
@@ -135,20 +136,21 @@ if __name__ == "__main__":
                 
                 # Forward
                 with torch.cuda.amp.autocast(torch_dtype == None):
-                    enc_out, enc_lens, kv_caches = model(log_mels_tensor, log_mel_lens)
+                    dec_out, enc_out, enc_lens, kv_caches = model(input_tensor, log_mels_tensor, log_mel_lens)
                     enc_log_probs = torch.log_softmax(enc_out, dim=-1)#.float()  # "ctc_loss_cuda" not implemented for 'BFloat16'
                     ctc_tgt = bbpes_tensor.clone()
                     ctc_tgt[(ctc_tgt==1) | (ctc_tgt==2)] = 0
                     enc_loss = ctc_loss_fn(enc_log_probs.transpose(0,1), ctc_tgt, enc_lens, bbpe_lens)  # ctclossfn is wrong so correct it here
-                    loss = enc_loss
+                    dec_loss = dec_loss_fn(dec_out.flatten(0,1), target_tensor.flatten())
+                    loss = dec_loss + 0.3*enc_loss
 
                     losses.append(loss.item())
                     losses = losses[-n_acc_losses:]
                     avg_loss = sum(losses)/len(losses)
-                    if loss.item() > 2*avg_loss:
+                    if loss.item() > 4.0*avg_loss and step_counter > 512:
                         print(f'Loss too high: {loss.item()}, avg_loss: {avg_loss}')
                         # remove last
-                        #losses.pop()
+                        losses.pop()
                         continue
                     
                     loss = loss / n_grad_acc
@@ -161,13 +163,14 @@ if __name__ == "__main__":
                     scaler.update()
                     optimizer.zero_grad()
                     if step_counter % save_every_step == 0:
+                        print(f'Saving model at {model_save_path}/model_{step_counter}.pt')
                         torch.save(model.state_dict(), f'{model_save_path}/model_{step_counter}.pt')
                     step_counter += 1
                 lr_sched.step()
 
                 # Record
-                pbar.set_description(f'epoch: {epoch_num}, enc: {enc_loss.item():.2f}, lr: {lr_sched.get_last_lr()[0]:.4e}')
-                w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
+                pbar.set_description(f'epoch: {epoch_num}, dec: {dec_loss.item():.2f}, enc: {enc_loss.item():.2f}, lr: {lr_sched.get_last_lr()[0]:.4e}')
+                w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{dec_loss.item():.4f},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
                 w_trn.flush()
             
             pbar.close()
@@ -180,6 +183,14 @@ if __name__ == "__main__":
         w_trn.close()
         print(f'Saved model at {model_save_path}/model_{step_counter}.pt')
         print(f'Saved training stats at {train_csv_path}')
+    # other exception
+    except Exception as e:
+        # save model
+        torch.save(model.state_dict(), f'{model_save_path}/model_{step_counter}.pt')
+        w_trn.close()
+        print(f'Saved model at {model_save_path}/model_{step_counter}.pt')
+        print(f'Saved training stats at {train_csv_path}')
+        raise e
 
 
         

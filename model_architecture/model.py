@@ -22,20 +22,26 @@ class XMHA(nn.Module):
             nn.Linear(d_ff, d_model)
         )
         self.layernorm1 = nn.LayerNorm(d_model)
+        self.layernormkv = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
     
-    def forward(self, x, attn_bias=None, kv_cache=None):
+    def forward(self, x, kv=None, attn_bias=None, kv_cache=None):
         residual = x
         x = self.layernorm1(x)
-        q, k, v = self.Q(x), self.K(x), self.V(x)
+        q = self.Q(x)
+        q = q.reshape(*q.shape[:2], self.n_heads, -1)
+        if kv is None:
+            k, v = self.K(x), self.V(x)
+            k = k.reshape(*k.shape[:2], self.n_heads, -1)
+            v = v.reshape(*v.shape[:2], self.n_heads, -1)
+        else:
+            k, v = kv['k'], kv['v']
+
         # Input tensors must be in format [B, M, H, K] where
         # B is the batch size
         # M the sequence length
         # H the number of heads and
         # K the embeding size per head
-        q = q.reshape(*q.shape[:2], self.n_heads, -1)
-        k = k.reshape(*k.shape[:2], self.n_heads, -1)
-        v = v.reshape(*v.shape[:2], self.n_heads, -1)
 
         cached_k, cached_v = kv_cache['k'], kv_cache['v']
         if cached_k is not None:
@@ -82,23 +88,73 @@ class XModel(nn.Module):
 
         self.norm = nn.LayerNorm(d_model)
         self.enc2bbpe = nn.Linear(d_model, n_bbpe)
+
+        # Decoder
+        self.bbpe_emb = nn.Embedding(n_bbpe, d_model)
+        self.cross_attn = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        self.decoder = nn.ModuleList([XMHA(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        self.decnorm = nn.LayerNorm(d_model)
+        self.dec2bbpe = nn.Linear(d_model, n_bbpe)
     
-    def forward(self, mels_tensor, mel_lens, kv_caches=None, n_cnn_processed=0):
+    def forward(self, bbpes_tensor, mels_tensor, mel_lens, kv_caches=None, n_cnn_processed=0):
         # enc emb
         mels_tensor = mels_tensor.unsqueeze(1)
         src, src_lens = self.cnnemb(mels_tensor, mel_lens, n_cnn_processed)
         # enc
-        attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_size[0], window_right=self.window_size[1])
         # https://facebookresearch.github.io/xformers/components/ops.html
+        #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=self.window_sizes[i][0], window_right=self.window_sizes[i][1])
         #attn_bias = fmha.attn_bias.LowerTriangularFromBottomRightLocalAttentionMask(_window_size=self.window_size)
         if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
         for i, layer in enumerate(self.encoder):
-            src, kv_cache = layer(src, attn_bias, kv_cache=kv_caches[i])
+            #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=63, window_right=0)
+            attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=3000, window_right=0)
+            src, kv_cache = layer(src, attn_bias=attn_bias, kv_cache=kv_caches[i])
             kv_caches[i] = kv_cache
         src = self.norm(src)
         enc_pred = self.enc2bbpe(src)
         enc_lens = src_lens
-        return enc_pred, enc_lens, kv_caches
+
+        # dec
+        tgt = self.bbpe_emb(bbpes_tensor)
+        dec_kv_caches = [{'k':None, 'v':None} for _ in range(len(self.decoder))]
+        for i, layer in enumerate(self.decoder):
+            #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=63, window_right=0)
+            attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=3000, window_right=0)
+            tgt, kv_cache = layer(tgt, attn_bias=attn_bias, kv_cache=dec_kv_caches[i])
+            dec_kv_caches[i] = kv_cache
+            tgt, _ = self.cross_attn[i](tgt, kv_caches[i], attn_bias=None, kv_cache=dec_kv_caches[i])
+        tgt = self.decnorm(tgt)
+        dec_pred = self.dec2bbpe(tgt)
+
+        return dec_pred, enc_pred, enc_lens, kv_caches
+    
+
+    def encoder_forward(self, mels_tensor, mel_lens, kv_caches=None):
+        # enc emb
+        mels_tensor = mels_tensor.unsqueeze(1)
+        src, src_lens = self.cnnemb(mels_tensor, mel_lens)
+        # enc
+        attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=3000, window_right=0)
+        if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
+        for i, layer in enumerate(self.encoder):
+            src, kv_cache = layer(src, attn_bias=attn_bias, kv_cache=kv_caches[i])
+            kv_caches[i] = kv_cache
+        src = self.norm(src)
+        enc_pred = self.enc2bbpe(src)
+        return enc_pred, src_lens, kv_caches
+    
+    def decoder_forward(self, bbpes_tensor, kv_caches=None, dec_kv_caches=None):
+        tgt = self.bbpe_emb(bbpes_tensor)
+        if dec_kv_caches is None: dec_kv_caches = [{'k':None, 'v':None} for _ in range(len(self.decoder))]
+        for i, layer in enumerate(self.decoder):
+            attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=3000, window_right=0)
+            tgt, kv_cache = layer(tgt, attn_bias=attn_bias, kv_cache=dec_kv_caches[i])
+            dec_kv_caches[i] = kv_cache
+            tgt, _ = self.cross_attn[i](tgt, kv_caches[i], attn_bias=None, kv_cache={'k':None, 'v':None})
+        tgt = self.decnorm(tgt)
+        dec_pred = self.dec2bbpe(tgt)
+        return dec_pred, dec_kv_caches
+
     
 
     

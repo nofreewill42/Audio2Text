@@ -31,6 +31,8 @@ from audio_processor import AudioProcessor
 
 from utils import load_model
 
+import schedulefree
+
 
 if __name__ == "__main__":
 
@@ -47,11 +49,19 @@ if __name__ == "__main__":
 
     print('Dataset - START')
     tokenizer_path = Path(f'tokenizer/bbpe_{model.n_bbpe}')
+    # Coursera samples
     ds_path = Path('/media/nofreewill/8TB-SSD/Audio/Coursera/courses/')
     langs_dict_path = Path('/home/nofreewill/Documents/Projects/PrepareCoursera/langs_dict.json')
     langs_dict = json.loads(langs_dict_path.read_text())
     episodes_list = [k for k,v in langs_dict.items() if v == 'en']
-    
+    # Own samples
+    own_srts_path = Path('/media/nofreewill/8TB-SSD/Transcribe_Recordings/transcripts/HMI-data/data/')
+    own_srt_paths = list(own_srts_path.glob('*/large-v2/microphone_GT.srt'))
+    own_auds_path = Path('/media/nofreewill/HMI-data/data/')
+    own_aud_paths = [own_auds_path/ p.parent.parent.name / 'microphone.wav' for p in own_srt_paths]
+    own_samples = list(zip(own_aud_paths, own_srt_paths))
+    # All samples
+    episodes_list = episodes_list + (own_samples * 1000)
     
     ds = CourseraDataset(ds_path, episodes_list, tokenizer_path, T=240.000)
     dl = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=0)
@@ -66,29 +76,30 @@ if __name__ == "__main__":
     pct_start = 0.1/epochs_num
     ctc_loss_fn = torch.nn.CTCLoss(blank=0, zero_infinity=True)
     dec_loss_fn = torch.nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay)
-    lr_sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr,
-                                                    total_steps=total_steps + 2,
-                                                    div_factor=25, final_div_factor=1e4, pct_start=pct_start)
+    optimizer = schedulefree.AdamWScheduleFree(model.parameters(), lr=lr)
+    #optimizer = torch.optim.AdamW(model.parameters(), weight_decay=weight_decay)
+    # lr_sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr,
+    #                                                 total_steps=total_steps + 2,
+    #                                                 div_factor=10, final_div_factor=1e4, pct_start=pct_start)
     scaler = torch.cuda.amp.GradScaler()
 
     # load last saved model and start from there
-    save_every_step = 1000
+    save_every_step = 250
     model_save_path = Path(f'model_weights/{config_name}')
     model_save_path.mkdir(parents=True, exist_ok=True)
 
     model_laststep_number = max([int(f.stem.split('_')[-1]) for f in model_save_path.iterdir() if f.is_file()])
-    model_laststep_number = 44761
+    #model_laststep_number = 0
     if model_laststep_number > 0:
         print(f'Loading model from {model_save_path}/model_{model_laststep_number}.pt')
         model.load_state_dict(torch.load(f'{model_save_path}/model_{model_laststep_number}.pt'))
         # set lr_sched to last step
         print(f'Resuming training from last step {model_laststep_number * n_grad_acc}')
-        for _ in tqdm(range(model_laststep_number * n_grad_acc)):
-            lr_sched.step()
+        # for _ in tqdm(range(model_laststep_number * n_grad_acc)):
+        #     lr_sched.step()
         start_epoch = model_laststep_number // len(dl)
     # model_laststep_number = 0
-    # start_epoch = 0
+    start_epoch = 0
 
     # Stats
     import time
@@ -124,7 +135,7 @@ if __name__ == "__main__":
             for i, batch in enumerate(pbar):
                 if batch == None:
                     continue
-                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens = batch
+                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, audio_paths = batch
                 # Move to device
                 audios_tensor, audio_lens = audios_tensor.to(device), audio_lens.to(device)
                 bbpes_tensor, bbpe_lens = bbpes_tensor.to(device), bbpe_lens.to(device)
@@ -133,6 +144,7 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     log_mels_tensor, log_mel_lens = audio_proc.process(audios_tensor, audio_lens)
                     log_mels_tensor = log_mels_tensor.to(dtype=torch_dtype)
+                    
                 
                 # Forward
                 with torch.cuda.amp.autocast(torch_dtype == None):
@@ -144,11 +156,24 @@ if __name__ == "__main__":
                     dec_loss = dec_loss_fn(dec_out.flatten(0,1), target_tensor.flatten())
                     loss = dec_loss + 0.3*enc_loss
 
+                    if audio_paths[0].name == 'microphone.wav':
+                        print('#######################################')
+                        print(f'Audio path: {audio_paths}')
+                        print(f'Loss: {loss.item()}, dec_loss: {dec_loss.item()}, enc_loss: {enc_loss.item()}, avg_loss: {sum(losses)/len(losses)}')
+                        print('#######################################')
+
                     losses.append(loss.item())
                     losses = losses[-n_acc_losses:]
                     avg_loss = sum(losses)/len(losses)
-                    if loss.item() > 4.0*avg_loss and step_counter > 512:
+                    if loss.item() > 6.0*avg_loss and step_counter > 512:
                         print(f'Loss too high: {loss.item()}, avg_loss: {avg_loss}')
+                        if audio_paths[0].name == 'microphone.wav':
+                            print('#######################################')
+                            print(f'Audio path: {audio_paths}')
+                            print('#######################################')
+                        else:
+                            print(f'Episode path: {audio_paths}')
+
                         # remove last
                         losses.pop()
                         continue
@@ -166,11 +191,11 @@ if __name__ == "__main__":
                         print(f'Saving model at {model_save_path}/model_{step_counter}.pt')
                         torch.save(model.state_dict(), f'{model_save_path}/model_{step_counter}.pt')
                     step_counter += 1
-                lr_sched.step()
+                # lr_sched.step()
 
                 # Record
-                pbar.set_description(f'epoch: {epoch_num}, dec: {dec_loss.item():.2f}, enc: {enc_loss.item():.2f}, lr: {lr_sched.get_last_lr()[0]:.4e}')
-                w_trn.write(f'{epoch_num},{i},{lr_sched.get_last_lr()[0]:.4e},{dec_loss.item():.4f},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
+                pbar.set_description(f'epoch: {epoch_num}, dec: {dec_loss.item():.2f}, enc: {enc_loss.item():.2f}')
+                w_trn.write(f'{epoch_num},{i},{dec_loss.item():.4f},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
                 w_trn.flush()
             
             pbar.close()

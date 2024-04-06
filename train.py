@@ -61,10 +61,17 @@ if __name__ == "__main__":
     own_aud_paths = [own_auds_path/ p.parent.parent.name / 'microphone.wav' for p in own_srt_paths]
     own_samples = list(zip(own_aud_paths, own_srt_paths))
     # All samples
-    episodes_list = episodes_list + (own_samples * 1000)
+    episodes_list = episodes_list + (own_samples * 33)
+    # random index shuffle with seed
+    import random
+    random.seed(42)
+    random.shuffle(episodes_list)
+    print('\n'.join(episodes_list[:5]))
+    # add paths.txt with these episodes under training_stats/time.time() below
+
     
     ds = CourseraDataset(ds_path, episodes_list, tokenizer_path, T=240.000)
-    dl = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=0)
+    dl = DataLoader(ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=4)
     print('Dataset - END')
 
     print("Training - START")
@@ -84,22 +91,28 @@ if __name__ == "__main__":
     scaler = torch.cuda.amp.GradScaler()
 
     # load last saved model and start from there
-    save_every_step = 250
+    save_every_step = 1000
     model_save_path = Path(f'model_weights/{config_name}')
     model_save_path.mkdir(parents=True, exist_ok=True)
 
-    model_laststep_number = max([int(f.stem.split('_')[-1]) for f in model_save_path.iterdir() if f.is_file()])
-    #model_laststep_number = 0
+    # if list iterdir len > 0
+    if len(list(model_save_path.iterdir())) == 0:
+        model_laststep_number = 0
+    else:
+        model_laststep_number = max([int(f.stem.split('_')[-1]) for f in model_save_path.iterdir() if f.is_file()])
+        print(f'Last model step number to load: {model_laststep_number}')
+    model_laststep_number = 0  # !!!!!!!!!!!!!!!!!!!! - TEN CUIDADO
+    start_epoch = 0
     if model_laststep_number > 0:
         print(f'Loading model from {model_save_path}/model_{model_laststep_number}.pt')
         model.load_state_dict(torch.load(f'{model_save_path}/model_{model_laststep_number}.pt'))
         # set lr_sched to last step
-        print(f'Resuming training from last step {model_laststep_number * n_grad_acc}')
+        # print(f'Resuming training from last step {model_laststep_number * n_grad_acc}')
         # for _ in tqdm(range(model_laststep_number * n_grad_acc)):
         #     lr_sched.step()
         start_epoch = model_laststep_number // len(dl)
-    # model_laststep_number = 0
-    start_epoch = 0
+    start_epoch = max(0, start_epoch)
+
 
     # Stats
     import time
@@ -107,6 +120,9 @@ if __name__ == "__main__":
     stats_path.mkdir(parents=True, exist_ok=True)
     train_csv_path = Path(f'{stats_path}/train.csv')
     w_trn = open(str(train_csv_path), 'w', buffering=1)
+    # add the episodes here from above
+    episodes_list_path = Path(f'{stats_path}/episodes.txt')
+    episodes_list_path.write_text('\n'.join([str(e) for e in episodes_list]))
 
     # write hyperparameters in first line
     w_trn.write(f'''TRAINING:\n
@@ -135,7 +151,7 @@ if __name__ == "__main__":
             for i, batch in enumerate(pbar):
                 if batch == None:
                     continue
-                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, audio_paths = batch
+                audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, audio_paths, indexes = batch
                 # Move to device
                 audios_tensor, audio_lens = audios_tensor.to(device), audio_lens.to(device)
                 bbpes_tensor, bbpe_lens = bbpes_tensor.to(device), bbpe_lens.to(device)
@@ -159,7 +175,7 @@ if __name__ == "__main__":
                     if audio_paths[0].name == 'microphone.wav':
                         print('#######################################')
                         print(f'Audio path: {audio_paths}')
-                        print(f'Loss: {loss.item()}, dec_loss: {dec_loss.item()}, enc_loss: {enc_loss.item()}, avg_loss: {sum(losses)/len(losses)}')
+                        print(f'Avg_losses: {sum(losses)/len(losses)}, Loss: {loss.item():.6f}, dec_loss: {dec_loss.item()}, enc_loss: {enc_loss.item()}')
                         print('#######################################')
 
                     losses.append(loss.item())
@@ -194,8 +210,10 @@ if __name__ == "__main__":
                 # lr_sched.step()
 
                 # Record
-                pbar.set_description(f'epoch: {epoch_num}, dec: {dec_loss.item():.2f}, enc: {enc_loss.item():.2f}')
-                w_trn.write(f'{epoch_num},{i},{dec_loss.item():.4f},{enc_loss.item():.4f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]}\n')
+                episode_index = indexes[0]
+                # lr: {lr_sched.get_last_lr()[0]:.4e}   
+                pbar.set_description(f'epoch: {epoch_num}, avg_loss: {sum(losses)/len(losses):.2f}, dec: {dec_loss.item():.2f}, enc: {enc_loss.item():.2f}')
+                w_trn.write(f'{epoch_num},{i},{sum(losses)/len(losses):.3f},{dec_loss.item():.3f},{enc_loss.item():.3f},{audios_tensor.shape[1]},{bbpes_tensor.shape[1]},,,,,{episode_index}\n')   
                 w_trn.flush()
             
             pbar.close()

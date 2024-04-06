@@ -16,17 +16,17 @@ def collate_fn(batch):
     if len(batch) == 0:
         print('Empty batch because of None')
         return None
-    if len([(a,b,p) for (a,b,p) in batch if len(b) < len(a)/16000*12.5]) == 0:
+    if len([(a,b,p,i) for (a,b,p,i) in batch if len(b) < len(a)/16000*12.5]) == 0:
         print('Empty batch because of something to do with < 12.5')
         return None
-    audio_tensors, bbpe_tensors, audio_paths = list(zip(*batch))
+    audio_tensors, bbpe_tensors, audio_paths, indexes = list(zip(*batch))
     audio_lens = [len(audio) for audio in audio_tensors]
     bbpe_lens = [len(bbpe) for bbpe in bbpe_tensors]
     audios_tensor = torch.nn.utils.rnn.pad_sequence(audio_tensors, batch_first=True)
     audio_lens = torch.LongTensor(audio_lens)
     bbpes_tensor = torch.nn.utils.rnn.pad_sequence(bbpe_tensors, batch_first=True)
     bbpe_lens = torch.LongTensor(bbpe_lens)
-    return audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, audio_paths
+    return audios_tensor, audio_lens, bbpes_tensor, bbpe_lens, audio_paths, indexes
 
 
 
@@ -88,7 +88,7 @@ class CourseraDataset(Dataset):
             end_time = subs[-1].end.ordinal/1000
             duration = end_time - start_time
             audio_tensor = load_audio(audio_path, offset=start_time, duration=duration)
-            return audio_tensor, bbpes_tensor, audio_path
+            return audio_tensor, bbpes_tensor, audio_path, idx
         except Exception as e:
             print(f'Error: {e}')
             return None

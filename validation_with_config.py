@@ -17,13 +17,15 @@ from model_architecture.model import XModel
 
 from utils import load_model
 
+import schedulefree
+
 
 # Usage example
 config_name = "encoder_only_causal"#offline"#
 dtype = torch.bfloat16
-step_number = 46473 #45000
+step_number = 4000 #45000
 audio_proc, model, bbpe_tokenizer, device = load_model(config_name, step_number, dtype=dtype)
-#model.eval()
+model.eval()
 print(f'Using device: {device}')
 audio_proc.print_info()
 

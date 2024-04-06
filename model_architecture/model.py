@@ -107,7 +107,7 @@ class XModel(nn.Module):
         if kv_caches is None: kv_caches = [{'k':None, 'v':None} for _ in range(len(self.encoder))]
         for i, layer in enumerate(self.encoder):
             #attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=63, window_right=0)
-            attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=3000, window_right=0)
+            attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=63, window_right=0)
             src, kv_cache = layer(src, attn_bias=attn_bias, kv_cache=kv_caches[i])
             kv_caches[i] = kv_cache
         src = self.norm(src)
@@ -122,7 +122,7 @@ class XModel(nn.Module):
             attn_bias = fmha.attn_bias.LocalAttentionFromBottomRightMask(window_left=3000, window_right=0)
             tgt, kv_cache = layer(tgt, attn_bias=attn_bias, kv_cache=dec_kv_caches[i])
             dec_kv_caches[i] = kv_cache
-            tgt, _ = self.cross_attn[i](tgt, kv_caches[i], attn_bias=None, kv_cache=dec_kv_caches[i])
+            tgt, _ = self.cross_attn[i](tgt, kv_caches[i], attn_bias=None, kv_cache={'k':None, 'v':None})
         tgt = self.decnorm(tgt)
         dec_pred = self.dec2bbpe(tgt)
 

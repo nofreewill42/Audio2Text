@@ -1,5 +1,5 @@
 {
-    "d_model": 1024,
+    "d_model": 512,
     "cnn_embedder": {
         "dimensions": [1, 128, 256, 512],
         "kernel_sizes": [[3,3], [3,3], [3,3]],
@@ -8,9 +8,9 @@
     },
     "n_bbpe": 4096,
     "model": {
-        "n_layers": 16,
+        "n_layers": 12,
         "d_ff": 2048,
-        "n_heads": 16,
+        "n_heads": 8,
         "window_size": [47,1,0],
         "dropout": 0.0
     },
